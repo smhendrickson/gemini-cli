@@ -53,6 +53,7 @@ interface CliArgs {
   telemetryTarget: string | undefined;
   telemetryOtlpEndpoint: string | undefined;
   telemetryLogPrompts: boolean | undefined;
+  settingsJson: string | undefined;
 }
 
 async function parseArguments(): Promise<CliArgs> {
@@ -128,13 +129,17 @@ async function parseArguments(): Promise<CliArgs> {
       description: 'Enables checkpointing of file edits',
       default: false,
     })
+    .option('settings-json', {
+      type: 'string',
+      description: 'Settings JSON object to override all other settings.',
+    })
     .version(await getCliVersion()) // This will enable the --version flag based on package.json
     .alias('v', 'version')
     .help()
     .alias('h', 'help')
     .strict().argv;
 
-  return argv;
+  return argv as CliArgs;
 }
 
 // This function is now a thin wrapper around the server's implementation.
@@ -171,12 +176,22 @@ export async function loadCliConfig(
   const argv = await parseArguments();
   const debugMode = argv.debug || false;
 
+  let mergedSettings = { ...settings };
+  if (argv.settingsJson) {
+    try {
+      const jsonSettings = JSON.parse(argv.settingsJson);
+      mergedSettings = { ...mergedSettings, ...jsonSettings };
+    } catch (e) {
+      logger.error('Error parsing --settings-json:', e);
+    }
+  }
+
   // Set the context filename in the server's memoryTool module BEFORE loading memory
   // TODO(b/343434939): This is a bit of a hack. The contextFileName should ideally be passed
   // directly to the Config constructor in core, and have core handle setGeminiMdFilename.
   // However, loadHierarchicalGeminiMemory is called *before* createServerConfig.
-  if (settings.contextFileName) {
-    setServerGeminiMdFilename(settings.contextFileName);
+  if (mergedSettings.contextFileName) {
+    setServerGeminiMdFilename(mergedSettings.contextFileName);
   } else {
     // Reset to default if not provided in settings.
     setServerGeminiMdFilename(getCurrentGeminiMdFilename());
@@ -193,9 +208,9 @@ export async function loadCliConfig(
     extensionContextFilePaths,
   );
 
-  const mcpServers = mergeMcpServers(settings, extensions);
+  const mcpServers = mergeMcpServers(mergedSettings, extensions);
 
-  const sandboxConfig = await loadSandboxConfig(settings, argv);
+  const sandboxConfig = await loadSandboxConfig(mergedSettings, argv);
 
   return new Config({
     sessionId,
@@ -205,36 +220,37 @@ export async function loadCliConfig(
     debugMode,
     question: argv.prompt || '',
     fullContext: argv.all_files || false,
-    coreTools: settings.coreTools || undefined,
-    excludeTools: settings.excludeTools || undefined,
-    toolDiscoveryCommand: settings.toolDiscoveryCommand,
-    toolCallCommand: settings.toolCallCommand,
-    mcpServerCommand: settings.mcpServerCommand,
+    coreTools: mergedSettings.coreTools || undefined,
+    excludeTools: mergedSettings.excludeTools || undefined,
+    toolDiscoveryCommand: mergedSettings.toolDiscoveryCommand,
+    toolCallCommand: mergedSettings.toolCallCommand,
+    mcpServerCommand: mergedSettings.mcpServerCommand,
     mcpServers,
     userMemory: memoryContent,
     geminiMdFileCount: fileCount,
     approvalMode: argv.yolo || false ? ApprovalMode.YOLO : ApprovalMode.DEFAULT,
     showMemoryUsage:
-      argv.show_memory_usage || settings.showMemoryUsage || false,
-    accessibility: settings.accessibility,
+      argv.show_memory_usage || mergedSettings.showMemoryUsage || false,
+    accessibility: mergedSettings.accessibility,
     telemetry: {
-      enabled: argv.telemetry ?? settings.telemetry?.enabled,
+      enabled: argv.telemetry ?? mergedSettings.telemetry?.enabled,
       target: (argv.telemetryTarget ??
-        settings.telemetry?.target) as TelemetryTarget,
+        mergedSettings.telemetry?.target) as TelemetryTarget,
       otlpEndpoint:
         argv.telemetryOtlpEndpoint ??
         process.env.OTEL_EXPORTER_OTLP_ENDPOINT ??
-        settings.telemetry?.otlpEndpoint,
-      logPrompts: argv.telemetryLogPrompts ?? settings.telemetry?.logPrompts,
+        mergedSettings.telemetry?.otlpEndpoint,
+      logPrompts:
+        argv.telemetryLogPrompts ?? mergedSettings.telemetry?.logPrompts,
     },
-    usageStatisticsEnabled: settings.usageStatisticsEnabled ?? true,
+    usageStatisticsEnabled: mergedSettings.usageStatisticsEnabled ?? true,
     // Git-aware file filtering settings
     fileFiltering: {
-      respectGitIgnore: settings.fileFiltering?.respectGitIgnore,
+      respectGitIgnore: mergedSettings.fileFiltering?.respectGitIgnore,
       enableRecursiveFileSearch:
-        settings.fileFiltering?.enableRecursiveFileSearch,
+        mergedSettings.fileFiltering?.enableRecursiveFileSearch,
     },
-    checkpointing: argv.checkpointing || settings.checkpointing?.enabled,
+    checkpointing: argv.checkpointing || mergedSettings.checkpointing?.enabled,
     proxy:
       process.env.HTTPS_PROXY ||
       process.env.https_proxy ||
@@ -242,7 +258,7 @@ export async function loadCliConfig(
       process.env.http_proxy,
     cwd: process.cwd(),
     fileDiscoveryService: fileService,
-    bugCommand: settings.bugCommand,
+    bugCommand: mergedSettings.bugCommand,
     model: argv.model!,
     extensionContextFilePaths,
   });
